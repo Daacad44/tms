@@ -1,0 +1,398 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// USER MANAGEMENT & AUTH
+// ============================================
+
+enum UserRole {
+  SUPER_ADMIN
+  ADMIN
+  AGENT
+  CUSTOMER
+  FINANCE
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
+model User {
+  id            String    @id @default(uuid())
+  email         String    @unique
+  phone         String?
+  name          String
+  passwordHash  String    @map("password_hash")
+  role          UserRole  @default(CUSTOMER)
+  status        UserStatus @default(ACTIVE)
+  
+  // Customer specific
+  nationality   String?
+  passportNo    String?   @map("passport_no")
+  dateOfBirth   DateTime? @map("date_of_birth")
+  
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+  
+  // Relations
+  refreshTokens RefreshToken[]
+  bookings      Booking[]
+  auditLogs     AuditLog[]
+  createdBookings Booking[] @relation("BookingCreator")
+  
+  @@map("users")
+}
+
+model RefreshToken {
+  id         String    @id @default(uuid())
+  userId     String    @map("user_id")
+  tokenHash  String    @unique @map("token_hash")
+  expiresAt  DateTime  @map("expires_at")
+  revokedAt  DateTime? @map("revoked_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+// ============================================
+// TRIPS & DESTINATIONS
+// ============================================
+
+model Destination {
+  id          String   @id @default(uuid())
+  name        String
+  country     String
+  city        String?
+  description String?  @db.Text
+  imageUrl    String?  @map("image_url")
+  createdAt   DateTime @default(now()) @map("created_at")
+  
+  trips       Trip[]
+  
+  @@map("destinations")
+}
+
+enum TripStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum TripCategory {
+  UMRAH
+  HAJJ
+  DOMESTIC
+  INTERNATIONAL
+  CITY_TOUR
+  WEEKEND
+  ADVENTURE
+  LUXURY
+}
+
+model Trip {
+  id            String       @id @default(uuid())
+  title         String
+  slug          String       @unique
+  destinationId String       @map("destination_id")
+  description   String?      @db.Text
+  durationDays  Int          @map("duration_days")
+  category      TripCategory @default(INTERNATIONAL)
+  status        TripStatus   @default(DRAFT)
+  
+  // Details
+  inclusions    String?      @db.Text
+  exclusions    String?      @db.Text
+  highlights    String?      @db.Text
+  
+  createdAt     DateTime     @default(now()) @map("created_at")
+  updatedAt     DateTime     @updatedAt @map("updated_at")
+  
+  // Relations
+  destination   Destination  @relation(fields: [destinationId], references: [id])
+  images        TripImage[]
+  itineraries   Itinerary[]
+  departures    TripDeparture[]
+  addons        Addon[]
+  
+  @@index([slug])
+  @@index([destinationId])
+  @@index([status])
+  @@map("trips")
+}
+
+model TripImage {
+  id         String   @id @default(uuid())
+  tripId     String   @map("trip_id")
+  url        String
+  caption    String?
+  sortOrder  Int      @default(0) @map("sort_order")
+  
+  trip       Trip     @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  
+  @@index([tripId])
+  @@map("trip_images")
+}
+
+model Itinerary {
+  id         String   @id @default(uuid())
+  tripId     String   @map("trip_id")
+  dayNo      Int      @map("day_no")
+  title      String
+  details    String   @db.Text
+  
+  trip       Trip     @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  
+  @@index([tripId])
+  @@map("itineraries")
+}
+
+enum DepartureStatus {
+  AVAILABLE
+  FULL
+  CANCELLED
+  COMPLETED
+}
+
+model TripDeparture {
+  id            String          @id @default(uuid())
+  tripId        String          @map("trip_id")
+  startDate     DateTime        @map("start_date")
+  endDate       DateTime        @map("end_date")
+  capacity      Int
+  seatsReserved Int             @default(0) @map("seats_reserved")
+  basePrice     Decimal         @db.Decimal(10, 2) @map("base_price")
+  childPrice    Decimal?        @db.Decimal(10, 2) @map("child_price")
+  currency      String          @default("USD")
+  status        DepartureStatus @default(AVAILABLE)
+  
+  createdAt     DateTime        @default(now()) @map("created_at")
+  updatedAt     DateTime        @updatedAt @map("updated_at")
+  
+  // Relations
+  trip          Trip            @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  bookings      Booking[]
+  
+  @@index([tripId, startDate])
+  @@map("trip_departures")
+}
+
+enum AddonType {
+  INSURANCE
+  VISA
+  EXTRA_BAGGAGE
+  MEAL
+  TRANSPORT
+  ACCOMMODATION
+  OTHER
+}
+
+model Addon {
+  id         String    @id @default(uuid())
+  tripId     String    @map("trip_id")
+  name       String
+  description String?  @db.Text
+  price      Decimal   @db.Decimal(10, 2)
+  type       AddonType @default(OTHER)
+  isActive   Boolean   @default(true) @map("is_active")
+  
+  trip       Trip      @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  bookingAddons BookingAddon[]
+  
+  @@index([tripId])
+  @@map("addons")
+}
+
+// ============================================
+// BOOKINGS
+// ============================================
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+  EXPIRED
+}
+
+model Booking {
+  id             String        @id @default(uuid())
+  bookingCode    String        @unique @map("booking_code")
+  customerId     String        @map("customer_id")
+  departureId    String        @map("departure_id")
+  status         BookingStatus @default(PENDING)
+  
+  // Pricing
+  totalAmount    Decimal       @db.Decimal(10, 2) @map("total_amount")
+  paidAmount     Decimal       @default(0) @db.Decimal(10, 2) @map("paid_amount")
+  currency       String        @default("USD")
+  
+  // Metadata
+  notes          String?       @db.Text
+  cancellationReason String?   @db.Text @map("cancellation_reason")
+  
+  createdById    String?       @map("created_by_id")
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+  
+  // Relations
+  customer       User          @relation(fields: [customerId], references: [id])
+  departure      TripDeparture @relation(fields: [departureId], references: [id])
+  createdBy      User?         @relation("BookingCreator", fields: [createdById], references: [id])
+  passengers     BookingPassenger[]
+  addons         BookingAddon[]
+  payments       Payment[]
+  
+  @@index([bookingCode])
+  @@index([customerId])
+  @@index([departureId])
+  @@index([status])
+  @@map("bookings")
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+model BookingPassenger {
+  id          String    @id @default(uuid())
+  bookingId   String    @map("booking_id")
+  fullName    String    @map("full_name")
+  gender      Gender
+  dateOfBirth DateTime? @map("date_of_birth")
+  passportNo  String?   @map("passport_no")
+  nationality String?
+  isChild     Boolean   @default(false) @map("is_child")
+  
+  booking     Booking   @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  
+  @@index([bookingId])
+  @@map("booking_passengers")
+}
+
+model BookingAddon {
+  id        String  @id @default(uuid())
+  bookingId String  @map("booking_id")
+  addonId   String  @map("addon_id")
+  quantity  Int     @default(1)
+  price     Decimal @db.Decimal(10, 2)
+  
+  booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  addon     Addon   @relation(fields: [addonId], references: [id])
+  
+  @@index([bookingId])
+  @@map("booking_addons")
+}
+
+// ============================================
+// PAYMENTS
+// ============================================
+
+enum PaymentMethod {
+  CASH
+  EVC
+  ZAAD
+  SAHAL
+  CARD
+  BANK_TRANSFER
+}
+
+enum PaymentStatus {
+  INITIATED
+  PAID
+  FAILED
+  REFUNDED
+  PARTIAL
+}
+
+model Payment {
+  id          String        @id @default(uuid())
+  bookingId   String        @map("booking_id")
+  method      PaymentMethod
+  amount      Decimal       @db.Decimal(10, 2)
+  status      PaymentStatus @default(INITIATED)
+  reference   String?       @unique
+  
+  // Gateway info
+  gatewayResponse String?   @db.Text @map("gateway_response")
+  
+  paidAt      DateTime?     @map("paid_at")
+  createdAt   DateTime      @default(now()) @map("created_at")
+  
+  booking     Booking       @relation(fields: [bookingId], references: [id])
+  refunds     Refund[]
+  
+  @@index([bookingId])
+  @@index([reference])
+  @@map("payments")
+}
+
+enum RefundStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  COMPLETED
+}
+
+model Refund {
+  id          String       @id @default(uuid())
+  paymentId   String       @map("payment_id")
+  amount      Decimal      @db.Decimal(10, 2)
+  reason      String       @db.Text
+  status      RefundStatus @default(PENDING)
+  
+  approvedBy  String?      @map("approved_by")
+  approvedAt  DateTime?    @map("approved_at")
+  
+  createdAt   DateTime     @default(now()) @map("created_at")
+  
+  payment     Payment      @relation(fields: [paymentId], references: [id])
+  
+  @@index([paymentId])
+  @@map("refunds")
+}
+
+// ============================================
+// SYSTEM & SETTINGS
+// ============================================
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorId    String?  @map("actor_id")
+  action     String
+  entity     String
+  entityId   String?  @map("entity_id")
+  metadata   Json?
+  ipAddress  String?  @map("ip_address")
+  createdAt  DateTime @default(now()) @map("created_at")
+  
+  actor      User?    @relation(fields: [actorId], references: [id])
+  
+  @@index([entity, entityId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+model Setting {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  value     Json
+  updatedAt DateTime @updatedAt @map("updated_at")
+  
+  @@map("settings")
+}
